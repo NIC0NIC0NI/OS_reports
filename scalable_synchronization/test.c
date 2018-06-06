@@ -162,6 +162,7 @@ CREATE_MUTEX_TESTER_1(ticket)
 CREATE_MUTEX_TESTER_2(Anderson)
 CREATE_MUTEX_TESTER_1(GT)
 CREATE_MUTEX_TESTER_2(MCS)
+CREATE_MUTEX_TESTER_1(CLH)
 CREATE_MUTEX_TESTER_1(pthread)
 
 #define CREATE_BARRIER_TESTER(type)                                            \
@@ -197,6 +198,7 @@ typedef struct {
   mutex_Anderson_t mutex_Anderson;
   mutex_GT_t mutex_GT;
   mutex_MCS_t mutex_MCS;
+  mutex_CLH_t mutex_CLH;
   pthread_mutex_t mutex_pthread;
   barrier_centralized_t barrier_centralized;
   barrier_combining_tree_t barrier_combining_tree;
@@ -228,6 +230,9 @@ void *pthread_subroutine(void *args) {
                 obj->test_shared);
   check_shared_for_mutex(obj->repetitions, obj->test_shared);
   test_mutex_MCS(&obj->mutex_MCS, &obj->barrier_aux, obj->repetitions,
+                 obj->test_shared);
+  check_shared_for_mutex(obj->repetitions, obj->test_shared);
+  test_mutex_CLH(&obj->mutex_CLH, &obj->barrier_aux, obj->repetitions,
                  obj->test_shared);
   check_shared_for_mutex(obj->repetitions, obj->test_shared);
 #ifdef TEST_PTHREAD
@@ -319,9 +324,11 @@ int main(int argc, char **argv) {
       mutex_init_Anderson(&obj.mutex_Anderson, t_num);
       mutex_init_GT(&obj.mutex_GT, t_num);
       mutex_init_MCS(&obj.mutex_MCS);
+      mutex_init_CLH(&obj.mutex_CLH, t_num);
 
       retval = parallel_execute(pthread_subroutine, (void *)&obj, t_num);
 
+      mutex_destroy_CLH(&obj.mutex_CLH);
       mutex_destroy_Anderson(&obj.mutex_Anderson);
       mutex_destroy_GT(&obj.mutex_GT);
       pthread_mutex_destroy(&obj.mutex_pthread);

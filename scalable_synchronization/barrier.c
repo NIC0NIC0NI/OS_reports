@@ -38,14 +38,11 @@ void barrier_wait_centralized(barrier_centralized_t *barrier) {
   uint tid = thread_current_id();
   bool local_sense = !(barrier->local_sense[tid].value);
   barrier->local_sense[tid].value = local_sense;
-  if (atomic_fetch_sub_explicit(&barrier->count, 1, memory_order_relaxed) ==
-      1) {
-    atomic_store_explicit(&barrier->count, barrier->thread_num,
-                          memory_order_relaxed);
-    atomic_store_explicit(&barrier->sense, local_sense, memory_order_release);
+  if (ATOMIC_SUB(&barrier->count, 1) == 1) {
+    ATOMIC_STORE(&barrier->count, barrier->thread_num);
+    ATOMIC_RELEASE(&barrier->sense, local_sense);
   } else {
-    while (atomic_load_explicit(&barrier->sense, memory_order_acquire) !=
-           local_sense) {
+    while (ATOMIC_ACQUIRE(&barrier->sense) != local_sense) {
       delay(0);
     }
   }
@@ -121,15 +118,14 @@ void barrier_destroy_combining_tree(barrier_combining_tree_t *barrier) {
 
 static void barrier_wait_combining_tree_auxilary(combining_tree_node_t *node,
                                                  bool local_sense) {
-  if (atomic_fetch_sub_explicit(&node->count, 1, memory_order_relaxed) == 1) {
+  if (ATOMIC_SUB(&node->count, 1) == 1) {
     if (node->parent != NULL) {
       barrier_wait_combining_tree_auxilary(node->parent, local_sense);
     }
-    atomic_store_explicit(&node->count, node->fan_in, memory_order_relaxed);
-    atomic_store_explicit(&node->sense, local_sense, memory_order_release);
+    ATOMIC_STORE(&node->count, node->fan_in);
+    ATOMIC_RELEASE(&node->sense, local_sense);
   } else {
-    while (atomic_load_explicit(&node->sense, memory_order_acquire) !=
-           local_sense) {
+    while (ATOMIC_ACQUIRE(&node->sense) != local_sense) {
       delay(0);
     }
   }
@@ -212,9 +208,8 @@ void barrier_wait_dissemination(barrier_dissemination_t *barrier) {
 
   for (i = 0; i < barrier->log_thread_num; ++i) {
     atomic_bool *partner_flag = my_flags->partner_flags[i];
-    atomic_store_explicit(&partner_flag[offset], sense, memory_order_release);
-    while (atomic_load_explicit(&my_flags->my_flags[i + offset],
-                                memory_order_acquire) != sense) {
+    ATOMIC_RELEASE(&partner_flag[offset], sense);
+    while (ATOMIC_ACQUIRE(&my_flags->my_flags[i + offset]) != sense) {
       delay(0);
     }
   }
@@ -315,35 +310,29 @@ void barrier_wait_tournament(barrier_tournament_t *barrier) {
     char role = my_flag->roles[r];
 
     if (role == LOSER) {
-      atomic_store_explicit(my_flag->opponent_flags[r], sense,
-                            memory_order_release);
-      while (atomic_load_explicit(&my_flag->my_flags[r],
-                                  memory_order_acquire) != sense) {
+      ATOMIC_RELEASE(my_flag->opponent_flags[r], sense);
+      while (ATOMIC_ACQUIRE(&my_flag->my_flags[r]) != sense) {
         delay(0);
       }
       break;
 
     } else if (role == WINNER) {
-      while (atomic_load_explicit(&my_flag->my_flags[r],
-                                  memory_order_acquire) != sense) {
+      while (ATOMIC_ACQUIRE(&my_flag->my_flags[r]) != sense) {
         delay(0);
       }
 
     } else if (role == CHAMPION) {
-      while (atomic_load_explicit(&my_flag->my_flags[r],
-                                  memory_order_acquire) != sense) {
+      while (ATOMIC_ACQUIRE(&my_flag->my_flags[r]) != sense) {
         delay(0);
       }
-      atomic_store_explicit(my_flag->opponent_flags[r], sense,
-                            memory_order_release);
+      ATOMIC_RELEASE(my_flag->opponent_flags[r], sense);
       break;
     }
   }
 
   for (; r >= 0; --r) {
     if (my_flag->roles[r] == WINNER) {
-      atomic_store_explicit(my_flag->opponent_flags[r], sense,
-                            memory_order_release);
+      ATOMIC_RELEASE(my_flag->opponent_flags[r], sense);
     }
   }
   my_flag->sense = !sense;
@@ -395,7 +384,7 @@ void barrier_destroy_dual_tree(barrier_dual_tree_t *barrier) {
 static bool any_of(atomic_bool *arr) {
   uint i;
   for (i = 0; i < DUAL_TREE_FAN_IN; ++i) {
-    if (atomic_load_explicit(&arr[i], memory_order_acquire)) {
+    if (ATOMIC_ACQUIRE(&arr[i])) {
       return true;
     }
   }
@@ -412,14 +401,12 @@ void barrier_wait_dual_tree(barrier_dual_tree_t *barrier) {
     delay(0);
   }
   for (i = 0; i < DUAL_TREE_FAN_IN; ++i) {
-    atomic_store_explicit(&my_node->fan_in_child_not_ready[i],
-                          my_node->have_fan_in_child[i], memory_order_relaxed);
+    ATOMIC_STORE(&my_node->fan_in_child_not_ready[i],
+                 my_node->have_fan_in_child[i]);
   }
   if (my_id != 0) {
-    atomic_store_explicit(my_node->fan_in_parent_flag, false,
-                          memory_order_release);
-    while (atomic_load_explicit(&my_node->fan_out_parent_sense,
-                                memory_order_acquire) != sense) {
+    ATOMIC_RELEASE(my_node->fan_in_parent_flag, false);
+    while (ATOMIC_ACQUIRE(&my_node->fan_out_parent_sense) != sense) {
       delay(0);
     }
   }
@@ -427,7 +414,7 @@ void barrier_wait_dual_tree(barrier_dual_tree_t *barrier) {
   for (i = 0; i < DUAL_TREE_FAN_OUT; ++i) {
     atomic_bool *child = my_node->fan_out_child_flags[i];
     if (child != NULL) {
-      atomic_store_explicit(child, sense, memory_order_release);
+      ATOMIC_RELEASE(child, sense);
     }
   }
   my_node->local_sense = !sense;
@@ -476,19 +463,16 @@ void barrier_wait_arrival_tree(barrier_arrival_tree_t *barrier) {
     delay(0);
   }
   for (i = 0; i < DUAL_TREE_FAN_IN; ++i) {
-    atomic_store_explicit(&my_node->fan_in_child_not_ready[i],
-                          my_node->have_fan_in_child[i], memory_order_relaxed);
+    ATOMIC_STORE(&my_node->fan_in_child_not_ready[i],
+                 my_node->have_fan_in_child[i]);
   }
   if (my_id != 0) {
-    atomic_store_explicit(my_node->fan_in_parent_flag, false,
-                          memory_order_release);
-    while (atomic_load_explicit(&barrier->sense, memory_order_acquire) !=
-           sense) {
+    ATOMIC_RELEASE(my_node->fan_in_parent_flag, false);
+    while (ATOMIC_ACQUIRE(&barrier->sense) != sense) {
       delay(0);
     }
   } else {
-
-    atomic_store_explicit(&barrier->sense, sense, memory_order_release);
+    ATOMIC_RELEASE(&barrier->sense, sense);
   }
 
   my_node->local_sense = !sense;

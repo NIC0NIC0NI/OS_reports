@@ -15,13 +15,13 @@ int mutex_init_test_and_set(mutex_test_and_set_t *mutex) {
 }
 
 void mutex_lock_test_and_set(mutex_test_and_set_t *mutex) {
-  while (atomic_exchange_explicit(&mutex->locked, true, memory_order_acquire)) {
+  while (ATOMIC_ACQUIRE_EXCHANGE(&mutex->locked, true)) {
     delay(0);
   }
 }
 
 void mutex_unlock_test_and_set(mutex_test_and_set_t *mutex) {
-  atomic_store_explicit(&mutex->locked, false, memory_order_release);
+  ATOMIC_RELEASE(&mutex->locked, false);
 }
 
 int mutex_init_ticket(mutex_ticket_t *mutex) {
@@ -31,18 +31,15 @@ int mutex_init_ticket(mutex_ticket_t *mutex) {
 }
 
 void mutex_lock_ticket(mutex_ticket_t *mutex) {
-  int my_ticket =
-      atomic_fetch_add_explicit(&mutex->new_ticket, 1, memory_order_relaxed);
-  while (atomic_load_explicit(&mutex->now_serving, memory_order_acquire) !=
-         my_ticket) {
+  int my_ticket = ATOMIC_ADD(&mutex->new_ticket, 1);
+  while (ATOMIC_ACQUIRE(&mutex->now_serving) != my_ticket) {
     delay(0);
   }
 }
 
 void mutex_unlock_ticket(mutex_ticket_t *mutex) {
-  int next =
-      atomic_load_explicit(&mutex->now_serving, memory_order_relaxed) + 1;
-  atomic_store_explicit(&mutex->now_serving, next, memory_order_release);
+  int next = ATOMIC_LOAD(&mutex->now_serving) + 1;
+  ATOMIC_RELEASE(&mutex->now_serving, next);
 }
 
 int mutex_init_Anderson(mutex_Anderson_t *mutex, uint thread_num) {
@@ -72,23 +69,18 @@ void mutex_destroy_Anderson(mutex_Anderson_t *mutex) {
 
 void mutex_lock_Anderson(mutex_Anderson_t *mutex,
                          mutex_Anderson_ownership_t *onwership) {
-  int my_place =
-      atomic_fetch_add_explicit(&mutex->next_slot, 1, memory_order_relaxed) &
-      mutex->mask;
-  while (atomic_load_explicit(&mutex->slots[my_place].value,
-                              memory_order_acquire)) {
+  int my_place = ATOMIC_ADD(&mutex->next_slot, 1) & mutex->mask;
+  while (ATOMIC_ACQUIRE(&mutex->slots[my_place].value)) {
     delay(0);
   }
-  atomic_store_explicit(&mutex->slots[my_place].value, true,
-                        memory_order_relaxed);
+  ATOMIC_STORE(&mutex->slots[my_place].value, true);
   onwership->my_place = my_place;
 }
 
 void mutex_unlock_Anderson(mutex_Anderson_t *mutex,
                            mutex_Anderson_ownership_t *onwership) {
-  atomic_store_explicit(
-      &mutex->slots[(onwership->my_place + 1) & mutex->mask].value, false,
-      memory_order_release);
+  ATOMIC_RELEASE(&mutex->slots[(onwership->my_place + 1) & mutex->mask].value,
+                 false);
 }
 
 int mutex_init_GT(mutex_GT_t *mutex, uint t_num) {
@@ -117,21 +109,17 @@ void mutex_destroy_GT(mutex_GT_t *mutex) {
 
 void mutex_lock_GT(mutex_GT_t *mutex) {
   uint tid = thread_current_id();
-  mutex_GT_tail_t current = {tid, atomic_load_explicit(&mutex->slots[tid].value,
-                                                       memory_order_relaxed)};
-  mutex_GT_tail_t last =
-      atomic_exchange_explicit(&mutex->tail, current, memory_order_relaxed);
-  while (atomic_load_explicit(&mutex->slots[last.id].value,
-                              memory_order_acquire) == last.locked) {
+  mutex_GT_tail_t current = {tid, ATOMIC_LOAD(&mutex->slots[tid].value)};
+  mutex_GT_tail_t last = ATOMIC_EXCHANGE(&mutex->tail, current);
+  while (ATOMIC_ACQUIRE(&mutex->slots[last.id].value) == last.locked) {
     delay(0);
   }
 }
 
 void mutex_unlock_GT(mutex_GT_t *mutex) {
   uint tid = thread_current_id();
-  bool value =
-      atomic_load_explicit(&mutex->slots[tid].value, memory_order_relaxed);
-  atomic_store_explicit(&mutex->slots[tid].value, !value, memory_order_release);
+  bool value = ATOMIC_LOAD(&mutex->slots[tid].value);
+  ATOMIC_RELEASE(&mutex->slots[tid].value, !value);
 }
 
 int mutex_init_MCS(mutex_MCS_t *mutex) {
@@ -142,12 +130,11 @@ int mutex_init_MCS(mutex_MCS_t *mutex) {
 void mutex_lock_MCS(mutex_MCS_t *mutex, mutex_MCS_ownership_t *ownership) {
   mutex_MCS_ownership_t *predecessor;
   atomic_init(&ownership->next, NULL);
-  predecessor =
-      atomic_exchange_explicit(&mutex->tail, ownership, memory_order_relaxed);
+  predecessor = ATOMIC_EXCHANGE(&mutex->tail, ownership);
   if (predecessor != NULL) {
     atomic_init(&ownership->locked, true);
-    atomic_store_explicit(&predecessor->next, ownership, memory_order_release);
-    while (atomic_load_explicit(&ownership->locked, memory_order_acquire)) {
+    ATOMIC_RELEASE(&predecessor->next, ownership);
+    while (ATOMIC_ACQUIRE(&ownership->locked)) {
       delay(0);
     }
   }
@@ -155,18 +142,64 @@ void mutex_lock_MCS(mutex_MCS_t *mutex, mutex_MCS_ownership_t *ownership) {
 
 void mutex_unlock_MCS(mutex_MCS_t *mutex, mutex_MCS_ownership_t *ownership) {
   mutex_MCS_ownership_t *successor;
-  if (atomic_load_explicit(&ownership->next, memory_order_relaxed) == NULL) {
+  if (ATOMIC_LOAD(&ownership->next) == NULL) {
     mutex_MCS_ownership_t *expected = ownership;
-    if (atomic_compare_exchange_strong_explicit(&mutex->tail, &expected, NULL,
-                                                memory_order_release,
-                                                memory_order_relaxed)) {
+    if (ATOMIC_COMPARE_EXCHANGE_RELEASE(&mutex->tail, &expected, NULL)) {
       return;
     }
-    while (atomic_load_explicit(&ownership->next, memory_order_acquire) ==
-           NULL) {
+    while (ATOMIC_ACQUIRE(&ownership->next) == NULL) {
       delay(0);
     }
   }
-  successor = atomic_load_explicit(&ownership->next, memory_order_relaxed);
-  atomic_store_explicit(&successor->locked, false, memory_order_release);
+  successor = ATOMIC_LOAD(&ownership->next);
+  ATOMIC_RELEASE(&successor->locked, false);
+}
+
+int mutex_init_CLH(mutex_CLH_t *mutex, uint t_num) {
+  uint i;
+  padded_abool_t *slots;
+  padded_CLH_state_t *states;
+
+  slots = (padded_abool_t *)malloc(sizeof(padded_abool_t) * (t_num + 1));
+  if (slots == NULL) {
+    return OUT_OF_MEMORY;
+  }
+  states = (padded_CLH_state_t *)malloc(sizeof(padded_CLH_state_t) * t_num);
+  if (states == NULL) {
+    return OUT_OF_MEMORY;
+  }
+
+  for (i = 0; i < t_num; ++i) {
+    states[i].value.my_id = i;
+    atomic_init(&slots[i].value, false);
+  }
+  atomic_init(&slots[t_num].value, true);
+  atomic_init(&mutex->tail, t_num);
+
+  mutex->slots = slots;
+  mutex->states = states;
+  return SUCCESS;
+}
+
+void mutex_destroy_CLH(mutex_CLH_t *mutex) {
+  free(mutex->slots);
+  free(mutex->states);
+  mutex->slots = NULL;
+  mutex->states = NULL;
+}
+
+void mutex_lock_CLH(mutex_CLH_t *mutex) {
+  mutex_CLH_state_t *current_state = &mutex->states[thread_current_id()].value;
+  uint node_id = current_state->my_id;
+  ATOMIC_STORE(&mutex->slots[node_id].value, false);
+  current_state->watching = ATOMIC_EXCHANGE(&mutex->tail, node_id);
+  while (!ATOMIC_ACQUIRE(&mutex->slots[current_state->watching].value)) {
+    delay(0);
+  }
+}
+
+void mutex_unlock_CLH(mutex_CLH_t *mutex) {
+  mutex_CLH_state_t *current_state = &mutex->states[thread_current_id()].value;
+  ATOMIC_RELEASE(&mutex->slots[current_state->my_id].value, true);
+  current_state->my_id = current_state->watching;
 }
